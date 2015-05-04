@@ -1,0 +1,54 @@
+module Main where
+
+import Control.Monad
+import Data.List
+
+type Ident = String
+
+data LE = Var Ident | App LE LE | Lam Ident LE deriving (Eq)
+instance Show LE where
+    show (Var s) = s
+    show (App a b) = show a++" "++show b
+    show (Lam v b) = "(\\"++v++"."++show b++")"
+
+data Supply s a = Supply { runSupply :: [s] -> (a,[s]) }
+
+instance Monad (Supply s) where
+    return x   = Supply $ \ss -> (x,ss)
+    sa >>= fmb = Supply $ \ss -> let (a,ss') = sa `runSupply` ss 
+                                 in  (fmb a) `runSupply` ss'
+
+instance Functor (Supply s) where
+    f `fmap` sa = sa >>= return . f
+
+evalSupply :: Supply s a -> [s] -> a
+evalSupply s ss = fst $ s `runSupply` ss
+
+next :: (s->Bool) -> Supply s s
+next p = do x <- next0; if p x then return x else next p
+    where next0 = Supply $ \(s:ss) -> (s,ss)
+
+freeIds :: LE -> [Ident] -> [Ident]
+freeIds (Var v)   vs = if v`elem`vs then [v] else []
+freeIds (App f x) vs = nub (freeIds f vs ++ freeIds x vs)
+freeIds (Lam v b) vs = freeIds b (v:vs)
+
+subst :: Ident -> LE -> LE -> Supply Ident LE
+subst x val (Var v)     = return (if v==x then val else Var v)
+subst x val (App f y)   = liftM2 App (subst x val f) (subst x val y)
+subst x val (Lam v b)   = do
+    vfresh <- next (\x -> x `notElem` v:freeIds b [])
+    b'     <- subst v (Var vfresh) b
+    b''    <- subst x val b'
+    return (Lam vfresh b'')
+
+nf :: LE -> Supply Ident LE
+nf (Var v)           = return $ Var v
+nf (Lam v b)         = Lam v `fmap` nf b
+nf (App (Lam x b) y) = subst x y b
+nf (App f         x) = nf f >>= \f' -> nf (App f' x)
+
+norm :: LE -> LE
+norm e = nf e `evalSupply` freshs
+
+freshs = map (('x':) . show) [1..]
